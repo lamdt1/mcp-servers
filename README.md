@@ -15,6 +15,20 @@ Use `npm run dev` to run directly with `tsx` during development, or `npm start` 
 
 - `MP3_API_BASE_URL` (optional): Override the base URL for the mp3-api service. By default it uses `https://api-zingmp3.vercel.app/api`, which mirrors the public API exposed by the reference repository.
 
+## Use with MCP Server Hub
+
+You can add this server to MCP Hub through the **Add Server** dialog shown in the screenshot.
+
+- **Server Name**: Pick any label (e.g., `mp3-api`).
+- **Server Type**: `STDIO`.
+- **Command**: `npm`.
+- **Arguments**: one of the following, depending on how you prefer to run it:
+  - `run dev --` – runs the TypeScript source with `tsx` (recommended while developing).
+  - `run start --` – runs the compiled output from `dist` (after `npm run build`).
+- **Environment Variables**: set `MP3_API_BASE_URL` if you need to point at a different API base URL.
+
+Make sure dependencies are installed with `npm install` first. If you choose `run start --`, build the server beforehand with `npm run build`.
+
 ## Available Tools
 
 - `search_songs` – search songs by keyword.
