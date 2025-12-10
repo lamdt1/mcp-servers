@@ -4,10 +4,14 @@
   "description": "MCP server wrapping mp3-api for searching and playing music",
   "type": "module",
   "main": "dist/index.js",
+  "bin": {
+    "mp3-server.js": "./mp3-server.js"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/index.ts",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "mp3-server": "npm run build && node ./mp3-server.js"
   },
   "keywords": ["mcp", "mp3", "zingmp3", "music"],
   "author": "",
