@@ -1,12 +1,13 @@
-import { Server } from "@modelcontextprotocol/server";
-import { stdio } from "@modelcontextprotocol/server/stdio";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { Mp3ApiClient, StreamingResult } from "./mp3ApiClient.js";
+import { z } from "zod";
 
 const DEFAULT_BASE_URL = process.env.MP3_API_BASE_URL || "https://api-zingmp3.vercel.app/api";
 
 const client = new Mp3ApiClient(DEFAULT_BASE_URL);
 
-const server = new Server(
+const server = new McpServer(
   {
     name: "mp3-api-mcp-server",
     version: "0.1.0",
@@ -50,95 +51,91 @@ const pickBestStream = (streaming: StreamingResult): { quality: string; url: str
   return { quality: fallbackQuality, url: streaming.sources[fallbackQuality] };
 };
 
-server.tool(
+const searchSongsSchema = z.object({
+  keyword: z.string().describe("Text to search for"),
+});
+
+const songIdSchema = z.object({
+  id: z.string().describe("Song encodeId"),
+});
+
+const artistNameSchema = z.object({
+  name: z.string().describe("Artist alias (e.g. sontungmtp)"),
+});
+
+const albumIdSchema = z.object({
+  id: z.string().describe("Album encodeId"),
+});
+
+server.registerTool(
+  "search_songs",
   {
-    name: "search_songs",
     description: "Search for songs by keyword using the mp3-api repository",
-    inputSchema: {
-      type: "object",
-      properties: {
-        keyword: { type: "string", description: "Text to search for" },
-      },
-      required: ["keyword"],
-    },
+    inputSchema: searchSongsSchema as any,
   },
-  ({ keyword }) => handleErrors(() => client.searchSongs(keyword))
+  async (args: any) => {
+    const { keyword } = searchSongsSchema.parse(args);
+    return handleErrors(() => client.searchSongs(keyword));
+  }
 );
 
-server.tool(
+server.registerTool(
+  "get_song_lyrics",
   {
-    name: "get_song_lyrics",
     description: "Retrieve song lyrics by encodeId",
-    inputSchema: {
-      type: "object",
-      properties: {
-        id: { type: "string", description: "Song encodeId" },
-      },
-      required: ["id"],
-    },
+    inputSchema: songIdSchema as any,
   },
-  ({ id }) => handleErrors(() => client.fetchLyrics(id))
+  async (args: any) => {
+    const { id } = songIdSchema.parse(args);
+    return handleErrors(() => client.fetchLyrics(id));
+  }
 );
 
-server.tool(
+server.registerTool(
+  "get_song_streams",
   {
-    name: "get_song_streams",
     description: "Fetch playable stream URLs for a song encodeId",
-    inputSchema: {
-      type: "object",
-      properties: {
-        id: { type: "string", description: "Song encodeId" },
-      },
-      required: ["id"],
-    },
+    inputSchema: songIdSchema as any,
   },
-  ({ id }) => handleErrors(() => client.fetchStreaming(id))
+  async (args: any) => {
+    const { id } = songIdSchema.parse(args);
+    return handleErrors(() => client.fetchStreaming(id));
+  }
 );
 
-server.tool(
+server.registerTool(
+  "find_artist",
   {
-    name: "find_artist",
     description: "Look up artist details by alias or name",
-    inputSchema: {
-      type: "object",
-      properties: {
-        name: { type: "string", description: "Artist alias (e.g. sontungmtp)" },
-      },
-      required: ["name"],
-    },
+    inputSchema: artistNameSchema as any,
   },
-  ({ name }) => handleErrors(() => client.fetchArtist(name))
+  async (args: any) => {
+    const { name } = artistNameSchema.parse(args);
+    return handleErrors(() => client.fetchArtist(name));
+  }
 );
 
-server.tool(
+server.registerTool(
+  "get_album",
   {
-    name: "get_album",
     description: "Fetch album details by encodeId",
-    inputSchema: {
-      type: "object",
-      properties: {
-        id: { type: "string", description: "Album encodeId" },
-      },
-      required: ["id"],
-    },
+    inputSchema: albumIdSchema as any,
   },
-  ({ id }) => handleErrors(() => client.fetchAlbum(id))
+  async (args: any) => {
+    const { id } = albumIdSchema.parse(args);
+    return handleErrors(() => client.fetchAlbum(id));
+  }
 );
 
-server.tool(
+server.registerTool(
+  "play_song",
   {
-    name: "play_song",
     description: "Resolve the best available streaming URL for a song encodeId",
-    inputSchema: {
-      type: "object",
-      properties: {
-        id: { type: "string", description: "Song encodeId" },
-      },
-      required: ["id"],
-    },
+    inputSchema: songIdSchema as any,
   },
-  async ({ id }) =>
-    handleErrors(async () => {
+  async (args: any) => {
+    const { id } = songIdSchema.parse(args);
+    return handleErrors(async () => {
       const streams = await client.fetchStreaming(id);
       const best = pickBestStream(streams);
       return {
@@ -146,7 +143,9 @@ server.tool(
         selected: best,
         sources: streams.sources,
       };
-    })
+    });
+  }
 );
 
-stdio(server);
+const transport = new StdioServerTransport();
+server.connect(transport);
