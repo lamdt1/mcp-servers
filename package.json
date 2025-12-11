@@ -1,6 +1,6 @@
 {
   "name": "@lamdt/mp3-mcp-server",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MCP server wrapping mp3-api for searching and playing music",
   "type": "module",
   "main": "dist/index.js",

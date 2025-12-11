@@ -34,7 +34,11 @@ const handleErrors = async <T>(fn: () => Promise<T>) => {
     return respondWithJson(data);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unexpected error";
-    return respondWithJson({ error: message });
+    const errorResponse = {
+      error: message,
+      ...(error instanceof Error && error.stack ? { stack: error.stack } : {}),
+    };
+    return respondWithJson(errorResponse);
   }
 };
 
@@ -71,9 +75,9 @@ server.registerTool(
   "search_songs",
   {
     description: "Search for songs by keyword using the mp3-api repository",
-    inputSchema: searchSongsSchema as any,
+    inputSchema: searchSongsSchema,
   },
-  async (args: any) => {
+  async (args) => {
     const { keyword } = searchSongsSchema.parse(args);
     return handleErrors(() => client.searchSongs(keyword));
   }
@@ -83,9 +87,9 @@ server.registerTool(
   "get_song_lyrics",
   {
     description: "Retrieve song lyrics by encodeId",
-    inputSchema: songIdSchema as any,
+    inputSchema: songIdSchema,
   },
-  async (args: any) => {
+  async (args) => {
     const { id } = songIdSchema.parse(args);
     return handleErrors(() => client.fetchLyrics(id));
   }
@@ -95,9 +99,9 @@ server.registerTool(
   "get_song_streams",
   {
     description: "Fetch playable stream URLs for a song encodeId",
-    inputSchema: songIdSchema as any,
+    inputSchema: songIdSchema,
   },
-  async (args: any) => {
+  async (args) => {
     const { id } = songIdSchema.parse(args);
     return handleErrors(() => client.fetchStreaming(id));
   }
@@ -107,9 +111,9 @@ server.registerTool(
   "find_artist",
   {
     description: "Look up artist details by alias or name",
-    inputSchema: artistNameSchema as any,
+    inputSchema: artistNameSchema,
   },
-  async (args: any) => {
+  async (args) => {
     const { name } = artistNameSchema.parse(args);
     return handleErrors(() => client.fetchArtist(name));
   }
@@ -119,9 +123,9 @@ server.registerTool(
   "get_album",
   {
     description: "Fetch album details by encodeId",
-    inputSchema: albumIdSchema as any,
+    inputSchema: albumIdSchema,
   },
-  async (args: any) => {
+  async (args) => {
     const { id } = albumIdSchema.parse(args);
     return handleErrors(() => client.fetchAlbum(id));
   }
@@ -131,13 +135,21 @@ server.registerTool(
   "play_song",
   {
     description: "Resolve the best available streaming URL for a song encodeId",
-    inputSchema: songIdSchema as any,
+    inputSchema: songIdSchema,
   },
-  async (args: any) => {
+  async (args) => {
     const { id } = songIdSchema.parse(args);
     return handleErrors(async () => {
       const streams = await client.fetchStreaming(id);
       const best = pickBestStream(streams);
+      if (!best) {
+        return {
+          songId: id,
+          selected: null,
+          sources: streams.sources,
+          error: "No streaming sources available for this song",
+        };
+      }
       return {
         songId: id,
         selected: best,
