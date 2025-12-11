@@ -11,7 +11,8 @@
     "build": "node --max-old-space-size=8192 node_modules/typescript/bin/tsc -p tsconfig.json",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
-    "mp3-server": "npm run build && node ./mp3-server.js"
+    "mp3-server": "npm run build && node ./mp3-server.js",
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
     "mcp",
@@ -19,7 +20,7 @@
     "zingmp3",
     "music"
   ],
-  "author": "",
+  "author": "lamdt",
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.24.3",
