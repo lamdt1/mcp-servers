@@ -1,5 +1,5 @@
 {
-  "name": "mp3-mcp-server",
+  "name": "@lamdt/mp3-mcp-server",
   "version": "0.1.0",
   "description": "MCP server wrapping mp3-api for searching and playing music",
   "type": "module",
@@ -22,6 +22,9 @@
   ],
   "author": "lamdt",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.24.3",
     "axios": "^1.7.9",
