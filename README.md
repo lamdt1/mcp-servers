@@ -29,6 +29,45 @@ You can add this server to MCP Hub through the **Add Server** dialog shown in th
 
 Make sure dependencies are installed with `npm install` first. If you choose `run start --`, build the server beforehand with `npm run build`.
 
+## Testing
+
+### Offline Testing (Mock Data)
+
+Test the MCP server tools without making network requests using mock data:
+
+```bash
+# Test all tools with mock data (offline)
+npm run test:offline
+
+# Test a specific tool with mock data
+npm run test:tool search_songs --offline
+```
+
+### Online Testing (Real API)
+
+Test the MCP server tools with the real API:
+
+```bash
+# Test all tools with real API
+npm run test:online
+
+# Test a specific tool
+npm run test:tool search_songs
+```
+
+The test client will:
+1. Start the MCP server as a child process
+2. Connect to it via stdio transport
+3. List all available tools
+4. Run test cases for each tool (or a specific tool if specified)
+5. Display the results
+
+**Note**: For offline testing, the server uses `MockMp3ApiClient` which returns sample data without network calls. This is useful for:
+- Testing tool registration and schema validation
+- Testing error handling
+- Development without internet connection
+- CI/CD pipelines
+
 ## Available Tools
 
 - `search_songs` – search songs by keyword.

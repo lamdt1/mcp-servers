@@ -1,15 +1,19 @@
+/**
+ * MCP Server with Mock API Client for offline testing
+ * This version uses MockMp3ApiClient instead of the real API client
+ */
+
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { Mp3ApiClient, StreamingResult } from "./mp3ApiClient.js";
+import { StreamingResult } from "./mp3ApiClient.js";
+import { MockMp3ApiClient } from "./mockMp3ApiClient.js";
 import { z } from "zod";
 
-const DEFAULT_BASE_URL = process.env.MP3_API_BASE_URL || "https://api-zingmp3.vercel.app/api";
-
-const client = new Mp3ApiClient(DEFAULT_BASE_URL);
+const client = new MockMp3ApiClient();
 
 const server = new McpServer(
   {
-    name: "mp3-api-mcp-server",
+    name: "mp3-api-mcp-server-mock",
     version: "0.1.0",
   },
   {
@@ -51,7 +55,6 @@ const pickBestStream = (streaming: StreamingResult): { quality: string; url: str
   return { quality: fallbackQuality, url: streaming.sources[fallbackQuality] };
 };
 
-// Type assertions to bypass complex MCP SDK type inference that causes memory issues
 (server as any).registerTool(
   "search_songs",
   {
@@ -146,3 +149,4 @@ const pickBestStream = (streaming: StreamingResult): { quality: string; url: str
 
 const transport = new StdioServerTransport();
 server.connect(transport);
+
