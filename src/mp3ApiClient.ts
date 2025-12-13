@@ -1,4 +1,5 @@
-import axios, { AxiosInstance, AxiosResponse } from "axios";
+import axios, { AxiosInstance } from "axios";
+import crypto from "crypto";
 import { z } from "zod";
 
 const songSchema = z.object({
@@ -59,345 +60,380 @@ export interface AlbumResult extends z.infer<typeof albumSchema> {}
 
 interface ApiEnvelope<T> {
   err?: number;
+  msg?: string;
   message?: string;
   data?: T;
 }
 
-const unwrapResponse = <T>(response: AxiosResponse<ApiEnvelope<T> | T>): T => {
-  const { data } = response;
-  
-  // Handle null or undefined response
-  if (data === undefined || data === null) {
-    throw new Error("mp3-api response missing data payload");
-  }
-  
-  // If response is already an array, return it directly
-  if (Array.isArray(data)) {
-    return data as T;
-  }
-  
-  // Check if response has error field (wrapped response format)
-  if (typeof data === 'object' && !Array.isArray(data) && 'err' in data) {
-    const wrapped = data as ApiEnvelope<T>;
-    
-    // Check for error (err !== 0 means error)
-    if (wrapped.err !== undefined && wrapped.err !== 0) {
-      throw new Error(wrapped.message || `mp3-api error: ${wrapped.err}`);
-    }
-    
-    // If data field exists and is not null/undefined, return it
-    if ('data' in wrapped && wrapped.data !== undefined && wrapped.data !== null) {
-      return wrapped.data;
-    }
-    
-    // If err is 0 or undefined but no data field, check if the response itself is the data
-    // (some APIs return { err: 0, ...actualData } without nesting in a data field)
-    if (wrapped.err === 0 || wrapped.err === undefined) {
-      const { err, message, ...rest } = wrapped as any;
-      // If there are other fields besides err/message, treat them as the data
-      if (Object.keys(rest).length > 0) {
-        return rest as T;
-      }
-    }
-    
-    // No data found in wrapped response - include response in error for debugging
-    const responsePreview = JSON.stringify(data).substring(0, 200);
-    throw new Error(`mp3-api response missing data payload. Response: ${responsePreview}${JSON.stringify(data).length > 200 ? '...' : ''}`);
-  }
-  
-  // Response is not wrapped (no err field), return directly
-  // This handles APIs that return data directly without wrapping
-  return data as T;
-};
-
 export class Mp3ApiClient {
+  private readonly VERSION = "1.6.34";
+  private readonly URL = "https://zingmp3.vn";
+  private readonly SECRET_KEY = "2aa2d1c561e809b267f3638c4a307aab";
+  private readonly API_KEY = "88265e23d4284f25963e6eedac8fbfa3";
   private http: AxiosInstance;
+  private cookie: string | null = null;
 
-  constructor(baseURL: string) {
+  constructor() {
     this.http = axios.create({
-      baseURL,
-      timeout: 10000,
+      baseURL: this.URL,
+      timeout: 30000,
     });
   }
 
-  async searchSongs(keyword: string): Promise<SearchResult> {
-    // Try multiple endpoint formats - note: baseURL might already include /api
-    // Based on nvhung9/mp3-api, the endpoint should be /search with q parameter
-    const endpoints = [
-      { path: "/search", params: { q: keyword } },
-      { path: "/search", params: { keyword } },
-      { path: "/api/search", params: { q: keyword } },
-      { path: "/api/v2/search/multi", params: { q: keyword } },
-      // Try with different base URL structure
-      { path: "", params: { q: keyword, action: "search" } },
-    ];
-    
-    const errors: string[] = [];
-    
-    for (const endpoint of endpoints) {
+  // Get current timestamp for each request (CTIME needs to be fresh)
+  private getCTIME(): string {
+    return String(Math.floor(Date.now() / 1000));
+  }
+
+  private getHash256(str: string): string {
+    return crypto.createHash("sha256").update(str).digest("hex");
+  }
+
+  private getHmac512(str: string, key: string): string {
+    const hmac = crypto.createHmac("sha512", key);
+    return hmac.update(Buffer.from(str, "utf8")).digest("hex");
+  }
+
+  private hashParamNoId(path: string, ctime: string): string {
+    return this.getHmac512(
+      path + this.getHash256(`ctime=${ctime}version=${this.VERSION}`),
+      this.SECRET_KEY
+    );
+  }
+
+  private hashParam(path: string, id: string, ctime: string): string {
+    return this.getHmac512(
+      path + this.getHash256(`ctime=${ctime}id=${id}version=${this.VERSION}`),
+      this.SECRET_KEY
+    );
+  }
+
+  private hashParamHome(path: string, ctime: string): string {
+    return this.getHmac512(
+      path +
+        this.getHash256(`count=30ctime=${ctime}page=1version=${this.VERSION}`),
+      this.SECRET_KEY
+    );
+  }
+
+  private hashListMV(path: string, id: string, type: string, page: number, count: number, ctime: string): string {
+    return this.getHmac512(
+      path +
+        this.getHash256(
+          `count=${count}ctime=${ctime}id=${id}page=${page}type=${type}version=${this.VERSION}`
+        ),
+      this.SECRET_KEY
+    );
+  }
+
+  private async getCookie(): Promise<string> {
+    if (this.cookie) {
+      return this.cookie;
+    }
+
+    // Retry logic for getting cookie
+    const maxRetries = 3;
+    let lastError: Error | null = null;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        const response = await this.http.get<any>(endpoint.path, { params: endpoint.params });
-        let payload = unwrapResponse(response);
+        const response = await axios.get(this.URL, {
+          timeout: 15000,
+          maxRedirects: 5,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
+          },
+        });
         
-        // Handle string response (API might return error or wrong format)
-        if (typeof payload === 'string') {
-          if (payload.includes('<!DOCTYPE') || payload.includes('<html') || payload === 'Home' || payload.trim() === '') {
-            errors.push(`${endpoint.path}: Got invalid response: "${payload}"`);
-            continue;
+        if (response.headers["set-cookie"] && response.headers["set-cookie"].length > 0) {
+          // Try to find a valid cookie (prefer index 1 as in reference, but try others)
+          let cookieHeader: string | null = null;
+          
+          // First try index 1 (as in reference code)
+          if (response.headers["set-cookie"].length > 1) {
+            cookieHeader = response.headers["set-cookie"][1];
           }
-          // Try to parse as JSON string
-          try {
-            payload = JSON.parse(payload);
-          } catch {
-            errors.push(`${endpoint.path}: Response is string but not JSON: ${payload.substring(0, 50)}`);
-            continue;
+          
+          // If not found or empty, try index 0
+          if (!cookieHeader && response.headers["set-cookie"].length > 0) {
+            cookieHeader = response.headers["set-cookie"][0];
           }
-        }
-        
-        // ZingMp3 search response can have different structures:
-        // 1. { data: { songs: [...] } }
-        // 2. { songs: [...] }
-        // 3. { data: { items: [...] } } (for search results)
-        // 4. Array directly
-        // 5. { data: { data: { songs: [...] } } } (nested)
-        let songs: unknown[] = [];
-        
-        if (Array.isArray(payload)) {
-          songs = payload;
-        } else if ((payload as any)?.data) {
-          const data = (payload as any).data;
-          if (Array.isArray(data)) {
-            songs = data;
-          } else if (data?.songs && Array.isArray(data.songs)) {
-            songs = data.songs;
-          } else if (data?.items && Array.isArray(data.items)) {
-            songs = data.items;
-          } else if (data?.data?.songs && Array.isArray(data.data.songs)) {
-            songs = data.data.songs;
-          } else if (data?.data && Array.isArray(data.data)) {
-            songs = data.data;
+          
+          // Try to find any cookie that looks valid
+          if (!cookieHeader) {
+            cookieHeader = response.headers["set-cookie"].find((c: string) => 
+              c && c.length > 10 && (c.includes('=') || c.includes(';'))
+            ) || null;
           }
-        } else if ((payload as any)?.songs && Array.isArray((payload as any).songs)) {
-          songs = (payload as any).songs;
-        } else if ((payload as any)?.items && Array.isArray((payload as any).items)) {
-          songs = (payload as any).items;
-        }
-        
-        // Try to parse songs
-        if (songs.length > 0) {
-          const parsed = z.array(songSchema).safeParse(songs);
-          if (parsed.success && parsed.data.length > 0) {
-            return { songs: parsed.data };
-          } else {
-            // If parsing failed, try to extract at least encodeId and title
-            const extractedSongs = songs.map((song: any) => ({
-              encodeId: song?.encodeId || song?.id || song?.songId || '',
-              title: song?.title || song?.name || '',
-              artistsNames: song?.artistsNames || song?.artists?.map((a: any) => a.name || a).join(', ') || '',
-              thumbnail: song?.thumbnail || song?.thumb || song?.thumbnailM || '',
-              duration: song?.duration || song?.duration || undefined,
-            })).filter((s: any) => s.encodeId && s.title);
-            
-            if (extractedSongs.length > 0) {
-              return { songs: extractedSongs };
-            }
+          
+          if (cookieHeader && cookieHeader.trim().length > 0) {
+            // Use the full cookie string as in reference code
+            this.cookie = cookieHeader.trim();
+            return this.cookie;
           }
         }
         
-        errors.push(`${endpoint.path}: No songs found in response`);
+        lastError = new Error("No valid cookie found in response headers");
       } catch (error: any) {
-        const errorMsg = error?.response?.data 
-          ? `Status ${error.response.status}: ${JSON.stringify(error.response.data).substring(0, 100)}`
-          : error?.message || String(error);
-        errors.push(`${endpoint.path}: ${errorMsg}`);
-        continue;
+        lastError = error instanceof Error ? error : new Error(String(error));
+        // Wait before retry (exponential backoff)
+        if (attempt < maxRetries) {
+          await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+        }
       }
     }
-    
-    throw new Error(`Failed to search songs with keyword: ${keyword}. Errors: ${errors.join('; ')}`);
+
+    throw new Error(`Failed to get cookie after ${maxRetries} attempts: ${lastError?.message || 'Unknown error'}`);
+  }
+
+  private async requestZingMp3(path: string, qs: Record<string, any>, ctime?: string): Promise<any> {
+    try {
+      const cookie = await this.getCookie();
+      const requestCTIME = ctime || this.getCTIME(); // Use provided ctime or get fresh one
+      
+      const params = {
+        ...qs,
+        ctime: requestCTIME,
+        version: this.VERSION,
+        apiKey: this.API_KEY,
+      };
+
+      const response = await this.http.get(path, {
+        headers: {
+          Cookie: cookie,
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Referer': 'https://zingmp3.vn/',
+          'Origin': 'https://zingmp3.vn',
+        },
+        params,
+        timeout: 30000,
+      });
+
+      const data = response.data;
+      
+      // Handle error responses from ZingMp3
+      if (data && typeof data === 'object' && 'err' in data) {
+        if (data.err !== 0) {
+          // If cookie might be invalid, clear it and retry once
+          if (data.err === -115 || data.err === -113 || (data.msg && data.msg.includes('lỗi'))) {
+            this.cookie = null; // Clear cookie to force refresh
+            // Retry once with fresh cookie and fresh ctime
+            const freshCookie = await this.getCookie();
+            const freshCTIME = this.getCTIME();
+            const retryParams = {
+              ...params,
+              ctime: freshCTIME,
+            };
+            // Update sig with fresh ctime if it exists in qs
+            if (qs.sig) {
+              // Recalculate sig if needed - this is a simplified retry
+            }
+            const retryResponse = await this.http.get(path, {
+              headers: {
+                Cookie: freshCookie,
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Referer': 'https://zingmp3.vn/',
+                'Origin': 'https://zingmp3.vn',
+              },
+              params: retryParams,
+              timeout: 30000,
+            });
+            const retryData = retryResponse.data;
+            if (retryData && typeof retryData === 'object' && 'err' in retryData && retryData.err !== 0) {
+              throw new Error(retryData.msg || retryData.message || `ZingMp3 API error: ${retryData.err}`);
+            }
+            return retryData;
+          }
+          throw new Error(data.msg || data.message || `ZingMp3 API error: ${data.err}`);
+        }
+      }
+
+      return data;
+    } catch (error: any) {
+      if (error.response) {
+        const status = error.response.status;
+        const statusText = error.response.statusText;
+        const errorData = error.response.data;
+        throw new Error(`ZingMp3 API request failed: ${status} ${statusText} - ${JSON.stringify(errorData).substring(0, 200)}`);
+      }
+      if (error.message) {
+        throw error;
+      }
+      throw new Error(`ZingMp3 API request failed: ${String(error)}`);
+    }
+  }
+
+  async searchSongs(keyword: string): Promise<SearchResult> {
+    try {
+      const ctime = this.getCTIME();
+      const response = await this.requestZingMp3("/api/v2/search/multi", {
+        q: keyword,
+        sig: this.hashParamNoId("/api/v2/search/multi", ctime),
+      }, ctime);
+
+      // ZingMp3 search response structure: { data: { songs: [...] } }
+      let songs: unknown[] = [];
+      
+      if (response?.data) {
+        const data = response.data;
+        if (data?.songs && Array.isArray(data.songs)) {
+          songs = data.songs;
+        } else if (Array.isArray(data)) {
+          songs = data;
+        }
+      } else if (Array.isArray(response)) {
+        songs = response;
+      }
+
+      if (songs.length === 0) {
+        return { songs: [] };
+      }
+
+      // Parse and map songs
+      const parsedSongs = songs.map((song: any) => ({
+        encodeId: song?.encodeId || song?.id || "",
+        title: song?.title || song?.name || "",
+        artistsNames: song?.artistsNames || song?.artists?.map((a: any) => a.name || a).join(", ") || "",
+        thumbnail: song?.thumbnail || song?.thumb || song?.thumbnailM || "",
+        duration: song?.duration || undefined,
+      })).filter((s) => s.encodeId && s.title);
+
+      return { songs: parsedSongs };
+    } catch (error: any) {
+      throw new Error(`Failed to search songs: ${error.message}`);
+    }
   }
 
   async fetchLyrics(id: string): Promise<LyricResult> {
-    // ZingMp3 API uses /api/v2/lyric/get/lyric with 'id' parameter
-    const endpoints = [
-      { path: "/api/v2/lyric/get/lyric", params: { id } },
-      { path: "/api/lyric", params: { id } },
-      { path: "/lyric", params: { id } },
-    ];
-    
-    for (const endpoint of endpoints) {
-      try {
-        const response = await this.http.get<any>(endpoint.path, { params: endpoint.params });
-        const payload = unwrapResponse(response);
-        
-        // ZingMp3 lyric response: { data: { lyric: "...", sentences: [...] } } or { lyric: "...", sentences: [...] }
-        let lyricData: any = payload;
-        if ((payload as any)?.data) {
-          lyricData = (payload as any).data;
-        }
-        
-        const parsed = lyricSchema.safeParse(lyricData);
-        if (parsed.success) {
-          return {
-            songId: id,
-            lyric: parsed.data.lyric,
-            sentences: parsed.data.sentences,
-          };
-        }
-      } catch (error) {
-        continue;
+    try {
+      const ctime = this.getCTIME();
+      const response = await this.requestZingMp3("/api/v2/lyric/get/lyric", {
+        id: id,
+        sig: this.hashParam("/api/v2/lyric/get/lyric", id, ctime),
+      }, ctime);
+
+      // ZingMp3 lyric response: { data: { lyric: "...", sentences: [...] } }
+      let lyricData: any = response?.data || response;
+
+      const parsed = lyricSchema.safeParse(lyricData);
+      if (parsed.success) {
+        return {
+          songId: id,
+          lyric: parsed.data.lyric,
+          sentences: parsed.data.sentences,
+        };
       }
+
+      return {
+        songId: id,
+        lyric: lyricData?.lyric,
+        sentences: lyricData?.sentences,
+      };
+    } catch (error: any) {
+      return {
+        songId: id,
+        lyric: undefined,
+        sentences: undefined,
+      };
     }
-    
-    return {
-      songId: id,
-      lyric: undefined,
-      sentences: undefined,
-    };
   }
 
   async fetchStreaming(id: string): Promise<StreamingResult> {
-    // ZingMp3 API uses /api/v2/song/get/streaming with 'id' parameter
-    const endpoints = [
-      { path: "/api/v2/song/get/streaming", params: { id } },
-      { path: "/api/streaming", params: { id } },
-      { path: "/streaming", params: { id } },
-    ];
-    
-    for (const endpoint of endpoints) {
-      try {
-        const response = await this.http.get<any>(endpoint.path, { params: endpoint.params });
-        const payload = unwrapResponse(response);
-        
-        // ZingMp3 streaming response structure:
-        // { data: { 128: "url", 320: "url", lossless: "url", ... } }
-        // or { data: { streaming: { 128: "url", ... } } }
-        // or { 128: "url", 320: "url", ... } (direct)
-        let sources: Record<string, string> = {};
-        
-        if ((payload as any)?.data) {
-          const data = (payload as any).data;
-          if (data?.streaming && typeof data.streaming === 'object') {
-            // Nested streaming object
-            sources = data.streaming;
-          } else if (typeof data === 'object' && !Array.isArray(data)) {
-            // Data is the streaming object directly
-            sources = data;
-          }
-        } else if (typeof payload === 'object' && !Array.isArray(payload)) {
-          // Response is the streaming object directly (no data wrapper)
-          sources = payload as Record<string, string>;
-        }
-        
-        // Filter and normalize: extract URLs, handle both string keys and numeric keys
-        const filteredSources: Record<string, string> = {};
-        for (const [key, value] of Object.entries(sources)) {
-          if (typeof value === 'string') {
-            // Accept both http and https URLs
-            if (value.startsWith('http://') || value.startsWith('https://')) {
-              filteredSources[key] = value;
-            }
+    try {
+      const ctime = this.getCTIME();
+      const response = await this.requestZingMp3("/api/v2/song/get/streaming", {
+        id: id,
+        sig: this.hashParam("/api/v2/song/get/streaming", id, ctime),
+      }, ctime);
+
+      // ZingMp3 streaming response: { data: { 128: "url", 320: "url", lossless: "url", ... } }
+      let sources: Record<string, string> = {};
+      
+      const data = response?.data || response;
+      
+      if (data && typeof data === 'object' && !Array.isArray(data)) {
+        // Extract streaming URLs
+        for (const [key, value] of Object.entries(data)) {
+          if (typeof value === 'string' && (value.startsWith('http://') || value.startsWith('https://'))) {
+            sources[key] = value;
           } else if (typeof value === 'object' && value !== null && (value as any)?.url) {
-            // Some APIs wrap URL in object
             const url = (value as any).url;
             if (typeof url === 'string' && (url.startsWith('http://') || url.startsWith('https://'))) {
-              filteredSources[key] = url;
+              sources[key] = url;
             }
           }
         }
-        
-        if (Object.keys(filteredSources).length > 0) {
-          return {
-            songId: id,
-            sources: filteredSources,
-          };
-        }
-      } catch (error) {
-        continue;
       }
+
+      return {
+        songId: id,
+        sources,
+      };
+    } catch (error: any) {
+      return {
+        songId: id,
+        sources: {},
+      };
     }
-    
-    return {
-      songId: id,
-      sources: {},
-    };
   }
 
   async fetchArtist(name: string): Promise<ArtistResult | null> {
-    // ZingMp3 API uses /api/v2/page/get/artist with 'alias' parameter
-    const endpoints = [
-      { path: "/api/v2/page/get/artist", params: { alias: name } },
-      { path: "/api/artist", params: { name } },
-      { path: "/artist", params: { name } },
-    ];
-    
-    for (const endpoint of endpoints) {
-      try {
-        const response = await this.http.get<any>(endpoint.path, { params: endpoint.params });
-        const payload = unwrapResponse(response);
-        
-        // ZingMp3 artist response: { data: { name: "...", alias: "...", ... } } or { name: "...", alias: "...", ... }
-        let artistData: any = payload;
-        if ((payload as any)?.data) {
-          artistData = (payload as any).data;
-        }
-        
-        // Map ZingMp3 fields to our schema
-        const mappedData = {
-          name: artistData?.name || artistData?.alias || name,
-          alias: artistData?.alias || artistData?.name || name,
-          thumbnail: artistData?.thumbnail || artistData?.thumb || artistData?.thumbnailM,
-          totalFollow: artistData?.totalFollow || artistData?.followers,
-        };
-        
-        const parsed = artistSchema.safeParse(mappedData);
-        if (parsed.success) {
-          return parsed.data;
-        }
-      } catch (error) {
-        continue;
+    try {
+      const ctime = this.getCTIME();
+      const response = await this.requestZingMp3("/api/v2/page/get/artist", {
+        alias: name,
+        sig: this.hashParamNoId("/api/v2/page/get/artist", ctime),
+      }, ctime);
+
+      // ZingMp3 artist response: { data: { name: "...", alias: "...", ... } }
+      let artistData: any = response?.data || response;
+
+      const mappedData = {
+        name: artistData?.name || artistData?.alias || name,
+        alias: artistData?.alias || artistData?.name || name,
+        thumbnail: artistData?.thumbnail || artistData?.thumb || artistData?.thumbnailM,
+        totalFollow: artistData?.totalFollow || artistData?.followers,
+      };
+
+      const parsed = artistSchema.safeParse(mappedData);
+      if (parsed.success) {
+        return parsed.data;
       }
+
+      return null;
+    } catch (error: any) {
+      return null;
     }
-    
-    return null;
   }
 
   async fetchAlbum(id: string): Promise<AlbumResult | null> {
-    // ZingMp3 API uses /api/v2/page/get/playlist with 'id' parameter for albums/playlists
-    const endpoints = [
-      { path: "/api/v2/page/get/playlist", params: { id } },
-      { path: "/api/album", params: { id } },
-      { path: "/album", params: { id } },
-    ];
-    
-    for (const endpoint of endpoints) {
-      try {
-        const response = await this.http.get<any>(endpoint.path, { params: endpoint.params });
-        const payload = unwrapResponse(response);
-        
-        // ZingMp3 playlist/album response: { data: { encodeId: "...", title: "...", ... } } or { encodeId: "...", title: "...", ... }
-        let albumData: any = payload;
-        if ((payload as any)?.data) {
-          albumData = (payload as any).data;
-        }
-        
-        // Map ZingMp3 fields to our schema
-        const mappedData = {
-          encodeId: albumData?.encodeId || albumData?.id || id,
-          title: albumData?.title || albumData?.name,
-          artistsNames: albumData?.artistsNames || albumData?.artists?.map((a: any) => a.name).join(', '),
-          thumbnail: albumData?.thumbnail || albumData?.thumb || albumData?.thumbnailM,
-        };
-        
-        const parsed = albumSchema.safeParse(mappedData);
-        if (parsed.success) {
-          return parsed.data;
-        }
-      } catch (error) {
-        continue;
+    try {
+      const ctime = this.getCTIME();
+      const response = await this.requestZingMp3("/api/v2/page/get/playlist", {
+        id: id,
+        sig: this.hashParam("/api/v2/page/get/playlist", id, ctime),
+      }, ctime);
+
+      // ZingMp3 playlist/album response: { data: { encodeId: "...", title: "...", ... } }
+      let albumData: any = response?.data || response;
+
+      const mappedData = {
+        encodeId: albumData?.encodeId || albumData?.id || id,
+        title: albumData?.title || albumData?.name,
+        artistsNames: albumData?.artistsNames || albumData?.artists?.map((a: any) => a.name).join(", "),
+        thumbnail: albumData?.thumbnail || albumData?.thumb || albumData?.thumbnailM,
+      };
+
+      const parsed = albumSchema.safeParse(mappedData);
+      if (parsed.success) {
+        return parsed.data;
       }
+
+      return null;
+    } catch (error: any) {
+      return null;
     }
-    
-    return null;
   }
 }
